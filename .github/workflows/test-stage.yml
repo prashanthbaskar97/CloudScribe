@@ -1,0 +1,93 @@
+# This workflow will build a Java project with Maven, and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-maven
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+name: CloudApp CI and validation
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  PRODUCT_VERSION: "1.9.4"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'adopt'
+        cache: maven
+    - name: Setup PostgreSQL Server
+      uses: ikalnytskyi/action-setup-postgres@v4
+      with:
+        username: hariharansundaram
+        password: gautham123
+        database: hariharansundaram
+        port: 5432
+      id: postgres
+    - name: Build with Maven
+      run: mvn compile
+
+    - name: Test with Maven
+      run: mvn test
+      env:
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+          AWS_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+  
+  validate:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+
+    - uses: actions/checkout@v3
+    - name: Setup `packer`
+      uses: hashicorp/setup-packer@main
+      id: setup
+      with:
+        version: ${{ env.PRODUCT_VERSION }}
+
+    - name: Run `packer init`
+      id: init
+      run: "packer init aws-ec2.pkr.hcl"
+
+    - name: Run `packer fmt`
+      id: fmt
+      run: "packer fmt -check aws-ec2.pkr.hcl"
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'adopt'
+        cache: maven
+
+    - name: Package with Maven
+      run: mvn package -Dmaven.test.skip
+      env:
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+          AWS_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+
+    - name: Create test deployment folder
+      run: |
+        mkdir -p CloudAppRelease && cp ./target/cloud.app-0.0.1-SNAPSHOT.jar CloudAppRelease/cloud.app-0.0.1-SNAPSHOT.jar &&
+          cp ./application-prod.properties CloudAppRelease/application-prod.properties && cp ./users.csv CloudAppRelease/users.csv &&
+          cp ./start.sh CloudAppRelease/start.sh && cp ./cloudapp.service CloudAppRelease/cloudapp.service &&
+          cp ./cloudwatch-config.json  CloudAppRelease/cloudwatch-config.json
+
+    - name: Create zip of test deployment folder
+      uses: montudor/action-zip@v1
+      with:
+        args: zip -qq -r CloudAppRelease.zip CloudAppRelease
+        
+    - name: Run `packer validate`
+      id: validate
+      run: "packer validate aws-ec2.pkr.hcl"
